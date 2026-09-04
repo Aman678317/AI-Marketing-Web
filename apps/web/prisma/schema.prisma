@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String?
+  createdAt     DateTime @default(now())
+  workspaces    WorkspaceMember[]
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  createdAt   DateTime @default(now())
+  members     WorkspaceMember[]
+  brands      Brand[]
+  campaigns   Campaign[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  role        String
+  userId      String
+  workspaceId String
+  user        User     @relation(fields: [userId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+}
+
+model Brand {
+  id           String   @id @default(cuid())
+  name         String
+  workspaceId  String
+  website      String?
+  niche        String?
+  tone         String?
+  createdAt    DateTime @default(now())
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+}
+
+model Connection {
+  id           String   @id @default(cuid())
+  platform     String
+  accountId    String
+  displayName  String
+  tokens       Json
+  capabilities Json
+  workspaceId  String
+  createdAt    DateTime @default(now())
+}
+
+model Campaign {
+  id           String   @id @default(cuid())
+  name         String
+  brief        String
+  status       String   @default("DRAFT")
+  workspaceId  String
+  brandId      String?
+  createdAt    DateTime @default(now())
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+  content      Content[]
+}
+
+model Content {
+  id           String   @id @default(cuid())
+  campaignId   String
+  platform     String
+  caption      String?
+  mediaUrl     String?
+  status       String   @default("DRAFT")
+  scheduledAt  DateTime?
+  approvedBy   String?
+  approvedAt   DateTime?
+  createdAt    DateTime @default(now())
+  campaign     Campaign @relation(fields: [campaignId], references: [id])
+}
+
+model Job {
+  id           String   @id @default(cuid())
+  contentId    String
+  connector    String
+  status       String   @default("PENDING")
+  scheduledAt  DateTime?
+  attempts     Int      @default(0)
+  error        String?
+  createdAt    DateTime @default(now())
+}
+
+model Analytics {
+  id           String   @id @default(cuid())
+  contentId    String
+  platform     String
+  impressions  Int      @default(0)
+  reach        Int      @default(0)
+  views        Int      @default(0)
+  likes        Int      @default(0)
+  comments     Int      @default(0)
+  shares       Int      @default(0)
+  clicks       Int      @default(0)
+  raw          Json?
+  collectedAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String
+  userId    String?
+  meta      Json?
+  createdAt DateTime @default(now())
+}

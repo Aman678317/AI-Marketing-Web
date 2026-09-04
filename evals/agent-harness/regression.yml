@@ -1,0 +1,7 @@
+tests:
+  - name: campaign_plan_accuracy
+    script: run_eval.py
+    threshold: 0.9
+  - name: content_approval_flow
+    script: tests/e2e/campaign_flow.spec.ts
+    threshold: 1.0

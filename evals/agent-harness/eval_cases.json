@@ -1,0 +1,14 @@
+[
+  {
+    "id": "campaign_10day_multiplatform",
+    "brief": "Create a 10-day campaign for instagram, facebook, youtube, linkedin",
+    "expected_platforms": ["instagram","facebook","youtube","linkedin"],
+    "expected_days": 10
+  },
+  {
+    "id": "campaign_7day_b2b",
+    "brief": "Create 7 day LinkedIn campaign for B2B software",
+    "expected_platforms": ["linkedin"],
+    "expected_days": 7
+  }
+]
