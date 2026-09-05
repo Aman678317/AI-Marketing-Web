@@ -1,56 +1,89 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { withDb } from '@/lib/prisma';
+
+type DailyAsset = { day: number; assets: { type: string; platforms: string[]; status: string }[] };
+
+function fallbackPlan(brief: string, note: string) {
+  return {
+    campaign_id: 'demo_' + Date.now(),
+    objective: 'Website visits',
+    audience: 'Startup founders',
+    platforms: ['instagram', 'facebook', 'youtube', 'linkedin'],
+    duration_days: 10,
+    daily_assets: [] as DailyAsset[],
+    brief,
+    status: 'planned_fallback',
+    note,
+  };
+}
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { brief } = body;
+  let brief = '';
+  try {
+    const body = await req.json();
+    brief = typeof body?.brief === 'string' ? body.brief : '';
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
+  if (!brief.trim()) {
+    return NextResponse.json({ error: 'brief is required' }, { status: 400 });
+  }
+
+  // 1) Ask the Python worker for a plan (optional service).
   const workerUrl = process.env.WORKER_URL || 'http://localhost:8000';
-  let plan;
+  let plan: any;
   try {
     const res = await fetch(`${workerUrl}/agent/plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brief })
+      body: JSON.stringify({ brief }),
+      // Don't hang the request if the worker is down.
+      signal: AbortSignal.timeout(8000),
     });
-    plan = await res.json();
+    const text = await res.text();
+    plan = text ? JSON.parse(text) : null;
+    if (!plan || !plan.campaign_id) throw new Error('worker returned no plan');
   } catch {
-    plan = {
-      campaign_id: 'demo_' + Date.now(),
-      objective: 'Website visits',
-      audience: 'Startup founders',
-      platforms: ['instagram','facebook','youtube','linkedin'],
-      duration_days: 10,
-      daily_assets: [],
-      status: 'planned_fallback'
-    };
+    plan = fallbackPlan(brief, 'Agent worker unreachable — using fallback plan.');
   }
 
-  // Save campaign + content
-  const workspaceId = 'ws_demo';
-  const campaign = await prisma.campaign.create({
-    data: {
-      name: `Campaign ${plan.campaign_id.slice(0,8)}`,
-      brief,
-      status: 'DRAFT',
-      workspaceId,
-      content: {
-        create: plan.daily_assets?.slice(0,3).flatMap((d:any) => 
-          d.assets?.map((a:any) => ({
-            platform: a.platforms?.[0] || 'instagram',
-            caption: `${a.type} for day ${d.day}`,
-            status: 'DRAFT',
-          })) || []
-        ) || []
-      }
+  // 2) Persist campaign + content (optional — DB may not be migrated yet).
+  const saved = await withDb<{ saved: boolean; dbId: string | null; contentCount: number }>(
+    async (db) => {
+      const campaign = await db.campaign.create({
+        data: {
+          name: `Campaign ${String(plan.campaign_id).slice(0, 8)}`,
+          brief,
+          status: 'DRAFT',
+          workspaceId: 'ws_demo',
+          content: {
+            create:
+              (plan.daily_assets as DailyAsset[] | undefined)
+                ?.slice(0, 3)
+                .flatMap((d) =>
+                  (d.assets ?? []).map((a) => ({
+                    platform: a.platforms?.[0] || 'instagram',
+                    caption: `${a.type} for day ${d.day}`,
+                    status: 'DRAFT',
+                  }))
+                ) ?? [],
+          },
+        },
+        include: { content: true },
+      });
+      return { saved: true, dbId: campaign.id, contentCount: campaign.content.length };
     },
-    include: { content: true }
-  });
+    { saved: false, dbId: null, contentCount: 0 }
+  );
 
-  return NextResponse.json({ ...plan, saved: true, dbId: campaign.id, contentCount: campaign.content.length });
+  return NextResponse.json({ ...plan, ...saved });
 }
 
 export async function GET() {
-  const campaigns = await prisma.campaign.findMany({ include: { content: true } });
+  const campaigns = await withDb(
+    (db) => db.campaign.findMany({ include: { content: true } }),
+    [] // DB unavailable — return an empty list instead of a 500.
+  );
   return NextResponse.json({ campaigns });
 }

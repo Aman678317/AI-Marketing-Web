@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { withDb } from '@/lib/prisma';
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
@@ -29,20 +29,25 @@ export async function GET(req: NextRequest) {
     analytics: true
   };
 
-  // Save connection
-  await prisma.connection.upsert({
-    where: { id: 'meta_demo' },
-    update: { tokens, capabilities },
-    create: {
-      id: 'meta_demo',
-      platform: 'meta',
-      accountId: 'demo_account_123',
-      displayName: 'Demo Page',
-      tokens,
-      capabilities,
-      workspaceId: 'ws_demo'
-    }
-  });
+  // Save connection (DB optional — redirect succeeds even if persistence fails).
+  const saved = await withDb(
+    (db) =>
+      db.connection.upsert({
+        where: { id: 'meta_demo' },
+        update: { tokens, capabilities },
+        create: {
+          id: 'meta_demo',
+          platform: 'meta',
+          accountId: 'demo_account_123',
+          displayName: 'Demo Page',
+          tokens,
+          capabilities,
+          workspaceId: 'ws_demo'
+        }
+      }),
+    null
+  );
 
-  return NextResponse.redirect(new URL('/integrations?connected=meta', req.url));
+  const suffix = saved ? 'connected=meta' : 'error=db_unavailable';
+  return NextResponse.redirect(new URL(`/integrations?${suffix}`, req.url));
 }
