@@ -35,6 +35,21 @@ services:
     volumes:
       - minio_data:/data
 
+  queue-worker:
+    build:
+      context: ./services/queue-worker
+      dockerfile: Dockerfile
+    container_name: ai-marketing-queue-worker
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      # Python connector service (run on host: cd services/worker && uvicorn app.main:app --port 8000)
+      WORKER_URL: ${WORKER_URL:-http://host.docker.internal:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
 volumes:
   postgres_data:
   redis_data:
