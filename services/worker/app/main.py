@@ -4,8 +4,8 @@ Supervisor-style agent service:
   /agent/plan  — turns a campaign brief into a structured multi-day plan.
                  LLM provider chain, local-first (spec §14):
                    1. Ollama (local runtime, no paid API)
-                   2. OpenAI-compatible gateway (optional, e.g. Experiential
-                      Labs via EXPLABS_API_KEY)
+                   2. OpenAI-compatible gateways (optional):
+                      Experiential Labs (EXPLABS_API_KEY), NVIDIA NIM (NVIDIA_API_KEY)
                    3. Deterministic heuristic fallback (always succeeds)
                  All model output is untrusted data: strict pydantic
                  validation, bounded JSON, graceful degradation on any failure.
@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
-# Load project-root .env (never committed) so the optional cloud key works
+# Load project-root .env (never committed) so optional cloud keys work
 # whether uvicorn is started from services/worker or the repo root.
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 load_dotenv()
@@ -34,15 +34,19 @@ app = FastAPI(title="AI Marketing Agent Worker")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-AGENT_TIMEOUT = float(os.getenv("AGENT_TIMEOUT_SECONDS", "90"))
+AGENT_TIMEOUT = float(os.getenv("AGENT_TIMEOUT_SECONDS", "180"))
 # Keep LLM output bounded: generate captions for at most this many days via the
 # model; remaining days are filled deterministically so the plan is always complete.
 LLM_MAX_DAYS = int(os.getenv("LLM_MAX_DAYS", "10"))
 
-# Optional OpenAI-compatible gateway ( Experiential Labs by default ).
+# Optional OpenAI-compatible gateways (tried in order after local Ollama).
 EXPLABS_API_KEY = os.getenv("EXPLABS_API_KEY", "")
 EXPLABS_BASE_URL = os.getenv("EXPLABS_BASE_URL", "https://api.experientiallabs.ai/v1")
 EXPLABS_MODEL = os.getenv("EXPLABS_MODEL", "gpt-4o-mini")
+
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "openai/gpt-oss-20b")
 
 KNOWN_PLATFORMS = ["instagram", "facebook", "youtube", "linkedin", "x"]
 
@@ -212,23 +216,19 @@ def _llm_daily_assets_ollama(brief, platforms, days, audience, objective):
     return _validate_daily_assets(json.loads(resp.json()["message"]["content"]), llm_days)
 
 
-def _explabs_configured() -> bool:
-    return bool(EXPLABS_API_KEY)
-
-
-def _llm_daily_assets_openai_compat(brief, platforms, days, audience, objective):
-    """Optional cloud gateway (OpenAI-compatible /chat/completions)."""
+def _llm_daily_assets_openai_compat(base_url: str, api_key: str, model: str, brief, platforms, days, audience, objective):
+    """Generic OpenAI-compatible gateway (used for ExLabs and NVIDIA NIM)."""
     llm_days = min(days, LLM_MAX_DAYS)
     payload = {
-        "model": EXPLABS_MODEL,
+        "model": model,
         "messages": _planning_messages(brief, platforms, days, audience, objective, llm_days),
         "temperature": 0.7,
         "response_format": {"type": "json_object"},
     }
     resp = requests.post(
-        f"{EXPLABS_BASE_URL}/chat/completions",
+        f"{base_url}/chat/completions",
         json=payload,
-        headers={"Authorization": f"Bearer {EXPLABS_API_KEY}"},
+        headers={"Authorization": f"Bearer {api_key}"},
         timeout=AGENT_TIMEOUT,
     )
     resp.raise_for_status()
@@ -251,10 +251,15 @@ def health():
         "service": "worker",
         "providers": {
             "ollama": {"reachable": ollama_ok, "configured_model": OLLAMA_MODEL, "models": models},
-            "openai_compat": {
-                "configured": _explabs_configured(),
+            "explabs": {
+                "configured": bool(EXPLABS_API_KEY),
                 "base_url": EXPLABS_BASE_URL,
-                "configured_model": EXPLABS_MODEL if _explabs_configured() else None,
+                "configured_model": EXPLABS_MODEL if EXPLABS_API_KEY else None,
+            },
+            "nvidia": {
+                "configured": bool(NVIDIA_API_KEY),
+                "base_url": NVIDIA_BASE_URL,
+                "configured_model": NVIDIA_MODEL if NVIDIA_API_KEY else None,
             },
         },
     }
@@ -266,17 +271,28 @@ def plan_campaign(payload: dict):
     campaign_id = str(uuid.uuid4())
 
     platforms, days, audience, objective = _parse_brief(brief)
-    llm_days = min(days, LLM_MAX_DAYS)
 
     llm_assets: List[DailyAsset] = []
     generated_by = "heuristic"
 
-    # Provider chain: local-first, then optional cloud, then heuristic.
+    # Provider chain: local-first, then optional clouds, then heuristic.
     providers = []
     if _ollama_reachable():
         providers.append((f"ollama:{OLLAMA_MODEL}", _llm_daily_assets_ollama))
-    if _explabs_configured():
-        providers.append((f"explabs:{EXPLABS_MODEL}", _llm_daily_assets_openai_compat))
+    if EXPLABS_API_KEY:
+        providers.append((
+            f"explabs:{EXPLABS_MODEL}",
+            lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
+                EXPLABS_BASE_URL, EXPLABS_API_KEY, EXPLABS_MODEL, b, p, d, a, o
+            ),
+        ))
+    if NVIDIA_API_KEY:
+        providers.append((
+            f"nvidia:{NVIDIA_MODEL}",
+            lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
+                NVIDIA_BASE_URL, NVIDIA_API_KEY, NVIDIA_MODEL, b, p, d, a, o
+            ),
+        ))
 
     for name, fn in providers:
         try:

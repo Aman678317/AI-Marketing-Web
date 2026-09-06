@@ -89,6 +89,49 @@ async function fetchOpenAICompat(): Promise<Provider> {
   }
 }
 
+// NVIDIA NIM — optional OpenAI-compatible gateway (deep fallback in the planner chain).
+async function fetchNVIDIA(): Promise<Provider> {
+  const key = process.env.NVIDIA_API_KEY;
+  const base = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+  const configuredModel = process.env.NVIDIA_MODEL || 'openai/gpt-oss-20b';
+  if (!key) {
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'unavailable',
+      note: 'Set NVIDIA_API_KEY in .env to enable. The planner only calls it when local Ollama and other gateways are unavailable.',
+      models: [],
+    };
+  }
+  try {
+    const res = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok || !data?.data) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    const models: ModelInfo[] = data.data
+      .map((m: any) => ({ id: m.id }))
+      .sort((a: ModelInfo, b: ModelInfo) => a.id.localeCompare(b.id));
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'connected',
+      note: `Planner fallback uses "${configuredModel}" via ${base}. Override with NVIDIA_MODEL.`,
+      models,
+    };
+  } catch (err: any) {
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'unavailable',
+      note: err?.message || 'Could not reach the NVIDIA API.',
+      models: [],
+    };
+  }
+}
+
 async function fetchOllama(): Promise<Provider> {
   const base = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   try {
@@ -113,10 +156,10 @@ async function fetchOllama(): Promise<Provider> {
 }
 
 export async function GET() {
-  const [ollama, explabs, openai] = await Promise.all([fetchOllama(), fetchOpenAICompat(), fetchOpenAI()]);
+  const [ollama, explabs, nvidia, openai] = await Promise.all([fetchOllama(), fetchOpenAICompat(), fetchNVIDIA(), fetchOpenAI()]);
   return NextResponse.json({
-    providers: [ollama, explabs, openai],
+    providers: [ollama, explabs, nvidia, openai],
     principle:
-      'Local-first: no paid API key is required for core development. Cloud gateways are optional adapters; the planner prefers local Ollama, falls back to the gateway, then to deterministic heuristics.',
+      'Local-first: no paid API key is required for core development. Cloud gateways are optional adapters; the planner prefers local Ollama, then Experiential Labs, then NVIDIA NIM, then deterministic heuristics.',
   });
 }
