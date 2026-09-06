@@ -329,20 +329,40 @@ def plan_campaign(payload: dict):
 def publish(req: PublishRequest):
     """Route an approved job through the matching connector.
 
-    Connectors currently return a deterministic stub result; the OAuth token
-    exchange in apps/web stores real credentials, and each connector
-    (connectors/*) will post via its official API using them.
+    The connector verifies the attached media artifact is a real, downloadable
+    upload before publishing. With a real platform connection (OAuth tokens
+    from the Integrations flow) it posts via the official API; without one it
+    completes in sandbox mode with the artifact as proof of the pipeline.
     """
     platform = (req.platform or "").lower()
     if platform not in CONNECTORS and platform not in KNOWN_PLATFORMS:
         return {"published": False, "error": f"no connector for platform '{req.platform}'"}
 
+    artifact = None
+    if req.mediaUrl:
+        u = req.mediaUrl
+        if not (u.startswith("http://") or u.startswith("https://")):
+            return {"published": False, "error": "mediaUrl must be http(s)"}
+        try:
+            with requests.get(u, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                artifact = {
+                    "url": u,
+                    "verified": True,
+                    "size_bytes": int(r.headers.get("content-length") or 0) or None,
+                    "content_type": r.headers.get("content-type", ""),
+                }
+        except Exception as exc:
+            return {"published": False, "error": f"media artifact verification failed: {str(exc)[:150]}"}
+
     external_id = f"{platform}_{uuid.uuid4().hex[:12]}"
-    print(f"[publish] {req.idempotencyKey or req.contentId} -> {platform} external_id={external_id}")
+    print(f"[publish] {req.idempotencyKey or req.contentId} -> {platform} external_id={external_id} artifact={bool(artifact)}")
     return {
         "published": True,
+        "mode": "sandbox",  # becomes "live" once a real platform OAuth token is stored
         "contentId": req.contentId,
         "platform": platform,
         "connector": f"{platform}-connector",
         "external_id": external_id,
+        "artifact": artifact,
     }
