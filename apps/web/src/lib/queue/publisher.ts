@@ -1,7 +1,18 @@
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+/**
+ * Fast-fail Redis connection: if Redis is down, enqueuePublish must fail in
+ * seconds (the approve route catches it and continues) instead of hanging for
+ * minutes on ioredis default retry loops.
+ */
+const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+  connectTimeout: 3000,
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  retryStrategy: (times) => (times > 2 ? null : 200), // stop reconnecting after 2 tries
+});
+
 export const publishQueue = new Queue('publish', { connection: redis });
 
 /**
