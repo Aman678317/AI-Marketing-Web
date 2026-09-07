@@ -93,6 +93,162 @@ class PublishRequest(BaseModel):
     idempotencyKey: Optional[str] = None
 
 
+# ---------------------------------------------------------------- Deep research
+
+
+class Scene(BaseModel):
+    shot: str
+    motion: str = "slow zoom in"
+    seconds: float = 1.7
+
+
+class CreativeBrief(BaseModel):
+    topic: str
+    visual_style: str
+    palette: List[str]
+    mood: str
+    composition: str
+    subject_action: str
+    typography: str
+    aspect_ratio: str = "4:5"
+    scenes: List[Scene]
+    hashtags: List[str] = []
+    generated_by: str = "heuristic"
+
+
+STYLE_LIBRARY = [
+    ("minimal editorial", "airy layout, generous whitespace, one strong accent"),
+    ("bold poster", "oversized shapes, high contrast, poster energy"),
+    ("playful gradients", "soft blobs, rounded shapes, friendly feel"),
+    ("premium dark", "deep tones with a single glowing accent"),
+    ("corporate clean", "structured grid, crisp lines, trustworthy"),
+]
+MOODS = ["energetic", "confident", "inspiring", "focused", "uplifting"]
+ACTIONS = [
+    "a hand reaching toward a rising arrow",
+    "a rocket lifting off from an open laptop",
+    "papers transforming into a glowing chart",
+    "a figure stepping through a doorway of light",
+    "growth bars emerging from a seedling",
+]
+TYPOGRAPHY = ["heavy geometric sans, tight leading", "clean humanist sans, wide spacing", "condensed uppercase, strong kerning"]
+
+
+def _heuristic_brief(topic: str) -> CreativeBrief:
+    seed = sum(topic.encode()) if topic else 42
+    style, style_note = STYLE_LIBRARY[seed % len(STYLE_LIBRARY)]
+    palettes = [
+        ["#16a37f", "#0d1b2a", "#f4f7f6"],
+        ["#ff7e67", "#8e54e9", "#fff7f0"],
+        ["#1877f2", "#0a2a5a", "#eaf2ff"],
+        ["#ff5252", "#5a0a14", "#fff0f0"],
+        ["#0a66c2", "#06264c", "#f0f6ff"],
+    ]
+    palette = palettes[seed % len(palettes)]
+    action = ACTIONS[seed % len(ACTIONS)]
+    scenes = [
+        Scene(shot=f"establishing frame: {topic} visual metaphor", motion="slow zoom in", seconds=1.8),
+        Scene(shot=f"mid shot: {action}", motion="gentle pan left to right", seconds=1.7),
+        Scene(shot="closing frame: logo and call to action", motion="zoom out with fade", seconds=1.6),
+    ]
+    return CreativeBrief(
+        topic=topic or "our brand",
+        visual_style=f"{style} — {style_note}",
+        palette=palette,
+        mood=MOODS[seed % len(MOODS)],
+        composition="rule of thirds, subject left, headline right third",
+        subject_action=action,
+        typography=TYPOGRAPHY[seed % len(TYPOGRAPHY)],
+        aspect_ratio="4:5",
+        scenes=scenes,
+        hashtags=["#marketing", "#growth", "#aicontent"],
+        generated_by="heuristic",
+    )
+
+
+def _research_brief(topic: str) -> CreativeBrief:
+    """Research the topic into a full creative brief: style, colors, mood,
+    composition, subject action, typography and a 3-shot video plan."""
+    topic = (topic or "").strip()[:400]
+    system = (
+        "You are an award-winning art director doing visual research. Reply with ONLY valid JSON. Shape: "
+        '{"topic":"...","visual_style":"...","palette":["#hex","#hex","#hex"],"mood":"...",'
+        '"composition":"...","subject_action":"...","typography":"...","aspect_ratio":"4:5",'
+        '"scenes":[{"shot":"...","motion":"...","seconds":1.7},{"shot":"...","motion":"...","seconds":1.7},'
+        '{"shot":"...","motion":"...","seconds":1.6}],"hashtags":["#...","#...","#..."]}. '
+        "palette must be exactly 3 hex colors that fit the topic's industry and mood. scenes must be exactly 3."
+    )
+    user = f"Topic/brief to research: {topic}"
+
+    def _validated(data: dict) -> CreativeBrief:
+        palette = [c for c in (data.get("palette") or []) if isinstance(c, str) and c.startswith("#")][:3]
+        scenes = []
+        for s in (data.get("scenes") or [])[:3]:
+            if isinstance(s, dict):
+                try:
+                    scenes.append(Scene(
+                        shot=str(s.get("shot", "scene"))[:160],
+                        motion=str(s.get("motion", "slow zoom"))[:120],
+                        seconds=min(2.5, max(1.0, float(s.get("seconds") or 1.7))),
+                    ))
+                except Exception:
+                    continue
+        if len(palette) < 2 or not scenes:
+            raise ValueError("incomplete brief from model")
+        allowed = set(CreativeBrief.model_fields) - {"palette", "scenes", "generated_by"}
+        return CreativeBrief(
+            **{k: data[k] for k in allowed if k in data},
+            palette=palette,
+            scenes=scenes,
+            generated_by=name,
+        )
+
+    for name, fn in _provider_chain():
+        try:
+            llm_days_placeholder = None  # research uses its own call shape
+            if name.startswith("ollama"):
+                payload = {
+                    "model": OLLAMA_MODEL,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    "format": "json", "stream": False,
+                    "options": {"temperature": 0.8, "num_predict": 2048},
+                }
+                resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=AGENT_TIMEOUT)
+                resp.raise_for_status()
+                data = json.loads(resp.json()["message"]["content"])
+                return _validated(data)
+            else:
+                model = name.split(":", 1)[1]
+                base, key = (EXPLABS_BASE_URL, EXPLABS_API_KEY) if name.startswith("explabs") else (NVIDIA_BASE_URL, NVIDIA_API_KEY)
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    "temperature": 0.8, "response_format": {"type": "json_object"},
+                }
+                resp = requests.post(f"{base}/chat/completions", json=payload,
+                                     headers={"Authorization": f"Bearer {key}"}, timeout=AGENT_TIMEOUT)
+                resp.raise_for_status()
+                data = json.loads(resp.json()["choices"][0]["message"]["content"])
+                return _validated(data)
+        except Exception as exc:
+            print(f"[media/research] provider {name} failed: {exc}")
+    return _heuristic_brief(topic)
+
+
+def _provider_chain():
+    """Ordered list of (label, callable(brief,p,d,a,o)) LLM providers, local-first."""
+    chain = []
+    if _ollama_reachable():
+        chain.append((f"ollama:{OLLAMA_MODEL}", _llm_daily_assets_ollama))
+    if EXPLABS_API_KEY:
+        chain.append((f"explabs:{EXPLABS_MODEL}", lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
+            EXPLABS_BASE_URL, EXPLABS_API_KEY, EXPLABS_MODEL, b, p, d, a, o)))
+    if NVIDIA_API_KEY:
+        chain.append((f"nvidia:{NVIDIA_MODEL}", lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
+            NVIDIA_BASE_URL, NVIDIA_API_KEY, NVIDIA_MODEL, b, p, d, a, o)))
+    return chain
+
+
 def _parse_brief(brief: str):
     """Deterministic pre-parse — bounds the LLM task and powers the fallback."""
     text = (brief or "").lower()
@@ -275,26 +431,7 @@ def plan_campaign(payload: dict):
     llm_assets: List[DailyAsset] = []
     generated_by = "heuristic"
 
-    # Provider chain: local-first, then optional clouds, then heuristic.
-    providers = []
-    if _ollama_reachable():
-        providers.append((f"ollama:{OLLAMA_MODEL}", _llm_daily_assets_ollama))
-    if EXPLABS_API_KEY:
-        providers.append((
-            f"explabs:{EXPLABS_MODEL}",
-            lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
-                EXPLABS_BASE_URL, EXPLABS_API_KEY, EXPLABS_MODEL, b, p, d, a, o
-            ),
-        ))
-    if NVIDIA_API_KEY:
-        providers.append((
-            f"nvidia:{NVIDIA_MODEL}",
-            lambda b, p, d, a, o: _llm_daily_assets_openai_compat(
-                NVIDIA_BASE_URL, NVIDIA_API_KEY, NVIDIA_MODEL, b, p, d, a, o
-            ),
-        ))
-
-    for name, fn in providers:
+    for name, fn in _provider_chain():
         try:
             llm_assets = fn(brief, platforms, days, audience, objective)
             if llm_assets:
@@ -323,6 +460,14 @@ def plan_campaign(payload: dict):
         generated_by=generated_by,
     )
     return plan.model_dump()
+
+
+@app.post("/media/research")
+def media_research(payload: dict):
+    """Deep research: turn a topic into a full creative brief (style, palette,
+    mood, composition, subject action, typography, 3-shot video plan)."""
+    topic = (payload or {}).get("topic", "")
+    return _research_brief(topic).model_dump()
 
 
 @app.post("/publish")

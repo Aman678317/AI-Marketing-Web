@@ -3,6 +3,89 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { PageHeader, StatCard, PlatformChip } from '@/components/ui';
 
+function DailyStudio() {
+  const [topic, setTopic] = useState('');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function run() {
+    setRunning(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const res = await fetch('/api/automation/daily', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(topic.trim() ? { topic: topic.trim() } : {}),
+      });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setResult(data);
+    } catch (e: any) {
+      setErr(e?.message || 'Daily generation failed');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="border-b border-zinc-100 bg-gradient-to-b from-indigo-50/70 to-transparent px-6 py-5">
+        <span className="badge bg-indigo-100 text-indigo-700">Daily Studio</span>
+        <h2 className="mt-2 text-lg font-semibold">Deep-research → generate → publish, every day</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Researches your topic (style, palette, mood, action, video shots) then generates one image and one video.
+          A scheduled automation runs this daily at 09:00 — or run it now.
+        </p>
+      </div>
+      <div className="card-pad space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <input
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="Topic (blank = continue your latest campaign / brand niche)"
+            className="input flex-1 min-w-[240px] text-sm"
+          />
+          <button onClick={run} disabled={running} className="btn-brand px-5">
+            {running && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden />}
+            {running ? 'Researching & generating…' : 'Run today’s batch'}
+          </button>
+        </div>
+
+        {err && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">{err}</div>}
+
+        {result && (
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50/60 p-4 text-xs">
+            <p className="font-semibold text-ink">Topic: {result.topic}</p>
+            <p className="mt-1 text-zinc-500">
+              Style: {result.research?.visual_style} · Mood: {result.research?.mood} · Palette: {result.research?.palette?.join(' ')}
+              <span className="ml-1 font-mono text-2xs text-zinc-400">({result.research?.generated_by})</span>
+            </p>
+            <p className="mt-0.5 text-zinc-500">Shots: {result.research?.scenes?.join(' → ')}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {result.media?.map((m: any) =>
+                m.error ? (
+                  <span key={m.type} className="badge bg-red-100 text-red-700">{m.type}: {m.error}</span>
+                ) : (
+                  <a key={m.type} href={m.url} target="_blank" rel="noopener noreferrer"
+                    className="badge bg-emerald-100 text-emerald-700 hover:bg-emerald-200">
+                    {m.type === 'video' ? '🎬' : '🖼'} {m.type} ready ({Math.round((m.size_bytes || 0) / 1024)}KB)
+                  </a>
+                )
+              )}
+            </div>
+            <Link href="/content" className="mt-3 inline-block text-xs font-medium text-brand-700 underline underline-offset-2">
+              Review & approve in Content Library →
+            </Link>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 const EXAMPLES = [
   'For the next 10 days, promote my website example.com — one short video and one image post per day for Instagram, Facebook, YouTube, and LinkedIn. Professional tone, target startup founders, optimize for website visits.',
   'Create a 7-day LinkedIn campaign for my B2B SaaS launch. Thought-leadership posts, founder voice, morning slots.',
@@ -54,6 +137,8 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
+      <DailyStudio />
+
       {/* Hero + builder */}
       <section className="card overflow-hidden">
         <div className="border-b border-zinc-100 bg-gradient-to-b from-brand-50/60 to-transparent px-6 py-8 sm:px-8">
