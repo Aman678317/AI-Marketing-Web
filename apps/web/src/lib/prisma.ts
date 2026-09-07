@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 
 const globalForPrisma = global as unknown as { prisma?: PrismaClient | null };
 
@@ -30,7 +30,15 @@ export async function withDb<T>(op: (db: PrismaClient) => Promise<T>, fallback: 
   try {
     return await op(db);
   } catch (err) {
-    console.error('[prisma] query failed, degrading gracefully:', err);
+    if (err instanceof Prisma.PrismaClientInitializationError) {
+      // Engine couldn't start yet (env missing, DB down). Drop the cached
+      // client so the next request builds a fresh one — Next dev reloads
+      // .env files automatically, so recovery needs no server restart.
+      console.error('[prisma] client not ready (env/DB unavailable) — will retry on next request');
+      globalForPrisma.prisma = undefined;
+    } else {
+      console.error('[prisma] query failed, degrading gracefully:', err);
+    }
     return fallback;
   }
 }

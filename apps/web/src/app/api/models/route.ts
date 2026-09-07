@@ -45,6 +45,93 @@ async function fetchOpenAI(): Promise<Provider> {
   }
 }
 
+// Optional OpenAI-compatible gateway (Experiential Labs by default).
+// Mirrors the worker's planner chain: Ollama first, cloud gateway second, heuristic fallback last.
+async function fetchOpenAICompat(): Promise<Provider> {
+  const key = process.env.EXPLABS_API_KEY;
+  const base = process.env.EXPLABS_BASE_URL || 'https://api.experientiallabs.ai/v1';
+  const configuredModel = process.env.EXPLABS_MODEL || 'gpt-4o-mini';
+  if (!key) {
+    return {
+      id: 'explabs',
+      name: 'Experiential Labs (optional cloud)',
+      status: 'unavailable',
+      note: 'Set EXPLABS_API_KEY in .env to enable. Local Ollama and the heuristic planner keep the app fully functional without it.',
+      models: [],
+    };
+  }
+  try {
+    const res = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok || !data?.data) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    const models: ModelInfo[] = data.data
+      .map((m: any) => ({ id: m.id, detail: m.owned_by ? `owned_by: ${m.owned_by}` : undefined }))
+      .sort((a: ModelInfo, b: ModelInfo) => a.id.localeCompare(b.id));
+    return {
+      id: 'explabs',
+      name: 'Experiential Labs (optional cloud)',
+      status: 'connected',
+      note: `Planner uses "${configuredModel}" via ${base} when local Ollama is unavailable. Override with EXPLABS_MODEL.`,
+      models,
+    };
+  } catch (err: any) {
+    return {
+      id: 'explabs',
+      name: 'Experiential Labs (optional cloud)',
+      status: 'unavailable',
+      note: err?.message || 'Could not reach the gateway.',
+      models: [],
+    };
+  }
+}
+
+// NVIDIA NIM — optional OpenAI-compatible gateway (deep fallback in the planner chain).
+async function fetchNVIDIA(): Promise<Provider> {
+  const key = process.env.NVIDIA_API_KEY;
+  const base = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+  const configuredModel = process.env.NVIDIA_MODEL || 'openai/gpt-oss-20b';
+  if (!key) {
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'unavailable',
+      note: 'Set NVIDIA_API_KEY in .env to enable. The planner only calls it when local Ollama and other gateways are unavailable.',
+      models: [],
+    };
+  }
+  try {
+    const res = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok || !data?.data) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    const models: ModelInfo[] = data.data
+      .map((m: any) => ({ id: m.id }))
+      .sort((a: ModelInfo, b: ModelInfo) => a.id.localeCompare(b.id));
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'connected',
+      note: `Planner fallback uses "${configuredModel}" via ${base}. Override with NVIDIA_MODEL.`,
+      models,
+    };
+  } catch (err: any) {
+    return {
+      id: 'nvidia',
+      name: 'NVIDIA NIM (optional cloud)',
+      status: 'unavailable',
+      note: err?.message || 'Could not reach the NVIDIA API.',
+      models: [],
+    };
+  }
+}
+
 async function fetchOllama(): Promise<Provider> {
   const base = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   try {
@@ -69,10 +156,10 @@ async function fetchOllama(): Promise<Provider> {
 }
 
 export async function GET() {
-  const [openai, ollama] = await Promise.all([fetchOpenAI(), fetchOllama()]);
+  const [ollama, explabs, nvidia, openai] = await Promise.all([fetchOllama(), fetchOpenAICompat(), fetchNVIDIA(), fetchOpenAI()]);
   return NextResponse.json({
-    providers: [ollama, openai],
+    providers: [ollama, explabs, nvidia, openai],
     principle:
-      'Local-first: no paid API key is required for core development. OpenAI is an optional adapter, per the master spec.',
+      'Local-first: no paid API key is required for core development. Cloud gateways are optional adapters; the planner prefers local Ollama, then Experiential Labs, then NVIDIA NIM, then deterministic heuristics.',
   });
 }

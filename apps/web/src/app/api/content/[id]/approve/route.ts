@@ -5,11 +5,27 @@ import { enqueuePublish } from '@/lib/queue/publisher';
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const id = params.id;
 
+  // Optional body: { scheduledAt: ISO string } — the user-chosen upload time.
+  // Absent/invalid -> default to tomorrow same time.
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    body = {};
+  }
+  let scheduledAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  if (body?.scheduledAt) {
+    const parsed = new Date(body.scheduledAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      scheduledAt = parsed;
+    }
+  }
+
   const result = await withDb(
     async (db) => {
       const content = await db.content.update({
         where: { id },
-        data: { status: 'APPROVED', approvedAt: new Date(), approvedBy: 'user_demo' },
+        data: { status: 'APPROVED', approvedAt: new Date(), approvedBy: 'user_demo', scheduledAt },
       });
 
       const job = {
@@ -18,7 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         platform: content.platform,
         caption: content.caption,
         mediaUrl: content.mediaUrl,
-        scheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        scheduledAt,
       };
 
       // Queue is optional — approval must succeed even if Redis is down.

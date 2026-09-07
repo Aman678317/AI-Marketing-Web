@@ -5,7 +5,6 @@ dist
 .env.local
 .env.*.local
 *.log
-prisma/migrations
 *.db
 *.sqlite
 *.sqlite3
@@ -14,3 +13,4 @@ coverage
 .vscode
 .idea
 *.tsbuildinfo
+__pycache__/

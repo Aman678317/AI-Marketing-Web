@@ -1,15 +1,48 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { PageHeader, StatusBadge, PlatformChip, EmptyState } from '@/components/ui';
 
 const FLOW = ['DRAFT', 'AI_REVIEW', 'HUMAN_REVIEW', 'APPROVED', 'SCHEDULED', 'PUBLISHING', 'PUBLISHED'];
+
+function defaultSchedule(): string {
+  const d = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  d.setHours(9, 0, 0, 0);
+  // datetime-local expects local time without timezone suffix
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 export default function ContentLibrary() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [genKey, setGenKey] = useState<string | null>(null); // `${id}:${type}` while generating media
+  const [schedFor, setSchedFor] = useState<string | null>(null); // content id being scheduled
+  const [schedAt, setSchedAt] = useState<string>(defaultSchedule());
+
+  async function genMedia(id: string, type: 'image' | 'video') {
+    setGenKey(`${id}:${type}`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/content/${id}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type }),
+      });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setItems((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, mediaUrl: data.mediaUrl, mediaType: type } : i))
+      );
+    } catch (err: any) {
+      setError(err?.message || 'Media generation failed.');
+    } finally {
+      setGenKey(null);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -35,20 +68,32 @@ export default function ContentLibrary() {
     load();
   }, []);
 
-  async function approve(id: string) {
+  async function approve(id: string, scheduledAt: string) {
     setBusyId(id);
     setError(null);
     try {
-      const res = await fetch(`/api/content/${id}/approve`, { method: 'POST' });
+      const res = await fetch(`/api/content/${id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheduledAt: new Date(scheduledAt).toISOString() }),
+      });
       const text = await res.text();
       const data = text ? JSON.parse(text) : null;
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-      setItems((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'APPROVED' } : i)));
+      setItems((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, status: 'APPROVED', scheduledAt: data?.job?.scheduledAt ?? i.scheduledAt } : i))
+      );
+      setSchedFor(null);
     } catch (err: any) {
       setError(err?.message || 'Approval failed.');
     } finally {
       setBusyId(null);
     }
+  }
+
+  function openScheduler(id: string) {
+    setSchedAt(defaultSchedule());
+    setSchedFor(id);
   }
 
   const counts = FLOW.reduce((acc: Record<string, number>, s) => {
@@ -60,7 +105,7 @@ export default function ContentLibrary() {
     <div className="space-y-6">
       <PageHeader
         title="Content Library"
-        subtitle="Every asset follows the approval state machine — nothing publishes from DRAFT."
+        subtitle="Pick the exact upload time when you approve — publishing happens automatically via the queue."
         actions={<Link href="/" className="btn-ghost text-xs">+ New campaign</Link>}
       />
 
@@ -104,32 +149,93 @@ export default function ContentLibrary() {
                 <th className="px-5 py-3">Platform</th>
                 <th className="px-5 py-3">Caption</th>
                 <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Upload time</th>
                 <th className="px-5 py-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody>
               {items.map((i) => (
-                <tr key={i.id} className="border-t border-zinc-100 transition-colors hover:bg-zinc-50/60">
-                  <td className="px-5 py-3 text-xs font-medium text-zinc-500">{i.campaignName}</td>
-                  <td className="px-5 py-3"><PlatformChip platform={i.platform} /></td>
-                  <td className="max-w-xs truncate px-5 py-3 text-xs text-zinc-600">{i.caption ?? '—'}</td>
-                  <td className="px-5 py-3"><StatusBadge status={i.status} /></td>
-                  <td className="px-5 py-3 text-right">
-                    {i.status === 'DRAFT' ? (
-                      <button
-                        onClick={() => approve(i.id)}
-                        disabled={busyId === i.id}
-                        className="btn-brand px-3 py-1.5 text-2xs"
-                      >
-                        {busyId === i.id ? 'Approving…' : 'Approve'}
-                      </button>
-                    ) : (
-                      <span className="text-2xs text-zinc-400">
-                        {i.approvedAt ? `by ${i.approvedBy ?? 'user'}` : '—'}
-                      </span>
-                    )}
-                  </td>
-                </tr>
+                <Fragment key={i.id}>
+                  <tr className="border-t border-zinc-100 transition-colors hover:bg-zinc-50/60">
+                    <td className="px-5 py-3 text-xs font-medium text-zinc-500">{i.campaignName}</td>
+                    <td className="px-5 py-3"><PlatformChip platform={i.platform} /></td>
+                    <td className="max-w-xs truncate px-5 py-3 text-xs text-zinc-600">
+                      {i.caption ?? '—'}
+                      {i.mediaUrl && (
+                        <a
+                          href={i.mediaUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-2 inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-2xs font-medium text-emerald-700 ring-1 ring-emerald-200"
+                          title="Open generated media"
+                        >
+                          {(i.mediaType || (i.mediaUrl.endsWith('.mp4') ? 'video' : 'image')) === 'video' ? '🎬' : '🖼'} ready
+                        </a>
+                      )}
+                    </td>
+                    <td className="px-5 py-3"><StatusBadge status={i.status} /></td>
+                    <td className="px-5 py-3 text-xs text-zinc-500">
+                      {i.scheduledAt ? new Date(i.scheduledAt).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      {i.status === 'DRAFT' ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => genMedia(i.id, 'image')}
+                            disabled={genKey === `${i.id}:image` || busyId === i.id}
+                            className="btn-ghost px-2 py-1 text-2xs"
+                            title="Generate an image post"
+                          >
+                            {genKey === `${i.id}:image` ? '⏳' : '🖼'}
+                          </button>
+                          <button
+                            onClick={() => genMedia(i.id, 'video')}
+                            disabled={genKey === `${i.id}:video` || busyId === i.id}
+                            className="btn-ghost px-2 py-1 text-2xs"
+                            title="Generate a short video post"
+                          >
+                            {genKey === `${i.id}:video` ? '⏳' : '🎬'}
+                          </button>
+                          <button onClick={() => openScheduler(i.id)} className="btn-brand px-3 py-1.5 text-2xs">
+                            Approve
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-2xs text-zinc-400">
+                          {i.approvedAt ? `by ${i.approvedBy ?? 'user'}` : '—'}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                  {schedFor === i.id && (
+                    <tr className="border-t border-zinc-100 bg-brand-50/40">
+                      <td colSpan={6} className="px-5 py-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="text-xs font-semibold text-brand-700">Set upload time:</span>
+                          <input
+                            type="datetime-local"
+                            value={schedAt}
+                            onChange={(e) => setSchedAt(e.target.value)}
+                            className="input w-56 py-1.5 text-xs"
+                          />
+                          <button
+                            onClick={() => approve(i.id, schedAt)}
+                            disabled={busyId === i.id || !schedAt}
+                            className="btn-brand px-3 py-1.5 text-2xs"
+                          >
+                            {busyId === i.id ? 'Scheduling…' : 'Approve & schedule'}
+                          </button>
+                          <button onClick={() => setSchedFor(null)} className="btn-ghost px-3 py-1.5 text-2xs">
+                            Cancel
+                          </button>
+                          <span className="text-2xs text-zinc-400">
+                            Publishing job runs automatically at this time (BullMQ delayed job).
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

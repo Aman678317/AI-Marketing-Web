@@ -31,15 +31,17 @@ export async function POST(req: NextRequest) {
   }
 
   // 1) Ask the Python worker for a plan (optional service).
-  const workerUrl = process.env.WORKER_URL || 'http://localhost:8000';
-  let plan: any;
+  // 127.0.0.1 literal — `localhost` can resolve to ::1 on Windows and miss uvicorn.
+  // Timeout must exceed the LLM planning time (provider chain ~15-30s), not 8s.
+  const workerUrl = process.env.WORKER_URL || 'http://127.0.0.1:8000';
+  const planTimeoutMs = Number(process.env.PLAN_TIMEOUT_MS || 120000);
+  let plan;
   try {
     const res = await fetch(`${workerUrl}/agent/plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ brief }),
-      // Don't hang the request if the worker is down.
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(planTimeoutMs),
     });
     const text = await res.text();
     plan = text ? JSON.parse(text) : null;
